@@ -3,12 +3,16 @@ import { StateMemoryEngine } from "../../ts/client/storageEngine";
 import { PRODUCTION_PARAMS } from "../../ts/constants";
 import { State } from "../../ts/state";
 
-describe("StateMemoryEngine", function() {
+const {
+    MAX_DEPTH: maxDepth,
+    MAX_DEPOSIT_SUBTREE_DEPTH: maxSubtreeDepth
+} = PRODUCTION_PARAMS;
+
+describe("StateMemoryEngine", () => {
     let engine: StateMemoryEngine;
     let states: State[];
     beforeEach(async function() {
-        const params = PRODUCTION_PARAMS;
-        engine = new StateMemoryEngine(params.MAX_DEPTH);
+        engine = new StateMemoryEngine(maxDepth);
         states = [];
         for (let i = 0; i < 20; i++) {
             states.push(State.new(i, i, i, i));
@@ -36,5 +40,73 @@ describe("StateMemoryEngine", function() {
         }
         engine.revert(checkpoint);
         assert.equal(engine.root, root1, "revert to previous root");
+    });
+
+    describe("findVacantSubtree", () => {
+        it("finds first vacant subtree when empty", async function() {
+            const { path, witness } = await engine.findVacantSubtree(
+                maxSubtreeDepth
+            );
+            assert.equal(path, 0);
+            assert.lengthOf(witness, 30);
+        });
+
+        it("finds next vacant subtree when first is filled", async function() {
+            for (let i = 0; i < 1 << maxSubtreeDepth; i++) {
+                await engine.update(i, states[i]);
+            }
+            await engine.commit();
+
+            const { path, witness } = await engine.findVacantSubtree(
+                maxSubtreeDepth
+            );
+            assert.equal(path, 1);
+            assert.lengthOf(witness, 30);
+        });
+
+        it("finds next vacant subtree when first has cached items", async function() {
+            await engine.update(2, states[2]);
+            await engine.update(5, states[5]);
+
+            const { path, witness } = await engine.findVacantSubtree(
+                maxSubtreeDepth
+            );
+            assert.equal(path, 2);
+            assert.lengthOf(witness, 30);
+        });
+
+        it("fails when tree is full", async function() {
+            const depth = 4;
+            const smallTreeEngine = new StateMemoryEngine(depth);
+            for (let i = 0; i < 1 << depth; i++) {
+                await smallTreeEngine.update(i, State.new(i, i, i, i));
+            }
+            await smallTreeEngine.commit();
+
+            let errMsg = "";
+            try {
+                await smallTreeEngine.findVacantSubtree(maxSubtreeDepth);
+            } catch (err) {
+                errMsg = err.message;
+            }
+            assert.equal(
+                errMsg,
+                `Tree at level ${depth -
+                    maxSubtreeDepth} is full, no room for subtree insert`
+            );
+        });
+    });
+
+    describe("updateBatch", () => {
+        it("updates items at correct itemID", async function() {
+            const subtreeID = 2;
+            const items = states.slice(8, 12);
+
+            await engine.updateBatch(subtreeID, maxSubtreeDepth, items);
+
+            for (let i = 8; i < 12; i++) {
+                assert.equal(states[i].hash(), (await engine.get(i)).hash());
+            }
+        });
     });
 });
